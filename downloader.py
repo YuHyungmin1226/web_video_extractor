@@ -1,0 +1,287 @@
+"""
+Web Video Downloader Module
+Supports yt-dlp native downloads, multi-threaded HLS (m3u8) downloads via curl+ffmpeg, and direct MP4 downloads.
+"""
+import concurrent.futures
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import urllib.parse
+from typing import Callable, List, Optional
+
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
+
+from config import Config
+from detector import VideoCandidate
+from utils import check_ffmpeg_installed, sanitize_filename
+
+class VideoDownloader:
+    def __init__(self, config: Optional[Config] = None):
+        self.config = config or Config()
+        self.ffmpeg_path = self.config.get("ffmpeg_path") or check_ffmpeg_installed()
+
+    def download(
+        self,
+        candidate: VideoCandidate,
+        output_filename: str = "",
+        status_callback: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[Callable[[float], None]] = None
+    ) -> Optional[str]:
+        """Download video candidate and return final file path if successful."""
+
+        download_dir = self.config.get_download_path()
+        filename = sanitize_filename(output_filename or candidate.title or "downloaded_video")
+        if not filename.endswith(".mp4"):
+            filename += ".mp4"
+
+        final_path = os.path.join(download_dir, filename)
+
+        def log(msg: str):
+            if status_callback:
+                status_callback(msg)
+
+        def progress(p: float):
+            if progress_callback:
+                progress_callback(p)
+
+        log(f"Starting download: {candidate.title}")
+        log(f"Stream type: {candidate.video_type}")
+        log(f"Output target: {final_path}")
+
+        if candidate.video_type == "ytdlp":
+            return self._download_ytdlp(candidate, final_path, log, progress)
+        elif candidate.video_type == "m3u8":
+            return self._download_hls_m3u8(candidate, final_path, log, progress)
+        else:
+            return self._download_direct(candidate, final_path, log, progress)
+
+    def download_batch(
+        self,
+        candidates: List[VideoCandidate],
+        status_callback: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[Callable[[float], None]] = None
+    ) -> List[str]:
+        """Download multiple video candidates sequentially."""
+        saved_files = []
+        total = len(candidates)
+        if total == 0:
+            return saved_files
+
+        for i, candidate in enumerate(candidates, 1):
+            if status_callback:
+                status_callback(f"\n--- Batch Download [{i}/{total}]: {candidate.title} ---")
+
+            def single_progress(pct: float):
+                if progress_callback:
+                    overall = ((i - 1 + pct / 100.0) / total) * 100.0
+                    progress_callback(overall)
+
+            path = self.download(
+                candidate,
+                output_filename=f"{i:02d}_{candidate.title}",
+                status_callback=status_callback,
+                progress_callback=single_progress
+            )
+            if path and os.path.exists(path):
+                saved_files.append(path)
+
+        if progress_callback:
+            progress_callback(100.0)
+        return saved_files
+
+
+    def _download_ytdlp(self, candidate: VideoCandidate, final_path: str, log, progress) -> Optional[str]:
+        if yt_dlp is None:
+            log("yt-dlp is not installed in the current Python environment.")
+            return None
+        output_template = final_path.rsplit('.', 1)[0] + '.%(ext)s'
+
+        ydl_opts = {
+            'outtmpl': output_template,
+            'merge_output_format': 'mp4',
+            'format': 'bestvideo*+bestaudio/best',
+            'ffmpeg_location': self.ffmpeg_path or None,
+            'quiet': True,
+            'http_headers': {
+                'User-Agent': self.config.get("user_agent"),
+                'Referer': candidate.referer or candidate.url
+            }
+        }
+
+        def hook(d):
+            if d.get('status') == 'downloading':
+                total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                downloaded = d.get('downloaded_bytes') or 0
+                if total > 0:
+                    pct = (downloaded / total) * 100.0
+                    progress(pct)
+
+        ydl_opts['progress_hooks'] = [hook]
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([candidate.url])
+            progress(100.0)
+            log("Download completed successfully!")
+            return final_path
+        except Exception as e:
+            log(f"yt-dlp download failed: {e}")
+            return None
+
+    def _download_hls_m3u8(self, candidate: VideoCandidate, final_path: str, log, progress) -> Optional[str]:
+        referer = candidate.referer or candidate.url
+        user_agent = self.config.get("user_agent")
+        max_threads = int(self.config.get("threads", 8))
+
+        log("Fetching HLS playlist...")
+        # 1. Fetch main m3u8 using curl
+        curl_cmd = [
+            "curl", "-s", "-L",
+            "-A", user_agent,
+            "-H", f"Referer: {referer}",
+            candidate.url
+        ]
+        try:
+            res = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=15)
+            if res.returncode != 0 or not res.stdout.strip():
+                log("Failed to fetch m3u8 playlist.")
+                return None
+            m3u8_content = res.stdout
+        except Exception as e:
+            log(f"Error fetching playlist: {e}")
+            return None
+
+        # 2. Check if master playlist containing variant stream playlists
+        base_url = candidate.url.rsplit('/', 1)[0] + '/'
+        lines = [line.strip() for line in m3u8_content.splitlines() if line.strip()]
+        
+        # Check for sub-playlists (.m3u8)
+        sub_playlists = [line for line in lines if not line.startswith('#') and '.m3u8' in line.lower()]
+        if sub_playlists:
+            target_sub = urllib.parse.urljoin(base_url, sub_playlists[-1]) # take highest resolution variant
+            log(f"Resolved variant sub-playlist: {target_sub}")
+            res2 = subprocess.run([
+                "curl", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", target_sub
+            ], capture_output=True, text=True, timeout=15)
+            if res2.returncode == 0 and res2.stdout.strip():
+                m3u8_content = res2.stdout
+                base_url = target_sub.rsplit('/', 1)[0] + '/'
+
+        # 3. Extract segment URLs (.ts, .m4s, etc.)
+        segments = [line for line in m3u8_content.splitlines() if line.strip() and not line.startswith('#')]
+        if not segments:
+            log("No valid media segments found in playlist.")
+            return None
+
+        total_segments = len(segments)
+        log(f"Total media segments to download: {total_segments}")
+
+        # 4. Multi-threaded segment downloader into temp directory
+        temp_dir = tempfile.mkdtemp(prefix="web_video_hls_")
+        ts_files = [None] * total_segments
+        completed_count = 0
+
+        def download_segment(idx: int, seg_path: str):
+            nonlocal completed_count
+            seg_url = urllib.parse.urljoin(base_url, seg_path)
+            out_ts = os.path.join(temp_dir, f"seg_{idx:05d}.ts")
+
+            cmd = [
+                "curl", "-s", "-L",
+                "-A", user_agent,
+                "-H", f"Referer: {referer}",
+                "-o", out_ts,
+                "--retry", "3",
+                "--max-time", "30",
+                seg_url
+            ]
+            subprocess.run(cmd, check=False)
+            if os.path.exists(out_ts) and os.path.getsize(out_ts) > 0:
+                ts_files[idx] = out_ts
+                completed_count += 1
+                progress((completed_count / total_segments) * 95.0)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = [executor.submit(download_segment, i, seg) for i, seg in enumerate(segments)]
+            concurrent.futures.wait(futures)
+
+        valid_ts = [f for f in ts_files if f and os.path.exists(f)]
+        log(f"Successfully downloaded {len(valid_ts)} / {total_segments} segments.")
+
+        if not valid_ts:
+            log("Download failed: No segments were saved.")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+
+        # 5. Concatenate segments using FFmpeg or raw file join
+        log("Stitching video segments...")
+        if not self.ffmpeg_path:
+            self.ffmpeg_path = check_ffmpeg_installed()
+
+        if self.ffmpeg_path:
+            concat_list = os.path.join(temp_dir, "concat.txt")
+            with open(concat_list, "w", encoding="utf-8") as f:
+                for ts in valid_ts:
+                    f.write(f"file '{ts}'\n")
+
+            ff_cmd = [
+                self.ffmpeg_path, "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list,
+                "-c", "copy",
+                final_path
+            ]
+            res = subprocess.run(ff_cmd, capture_output=True, text=True)
+            if res.returncode == 0 and os.path.exists(final_path):
+                progress(100.0)
+                log("Concatenation complete! Video saved successfully.")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return final_path
+            else:
+                log(f"FFmpeg concat warning: {res.stderr[:200]}")
+
+        # Fallback binary concat if ffmpeg is missing or failed
+        log("Using direct stream concatenation fallback...")
+        try:
+            with open(final_path, "wb") as outfile:
+                for ts in valid_ts:
+                    with open(ts, "rb") as infile:
+                        outfile.write(infile.read())
+            progress(100.0)
+            log("Fallback concatenation complete!")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return final_path
+        except Exception as e:
+            log(f"Concat failed: {e}")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+
+    def _download_direct(self, candidate: VideoCandidate, final_path: str, log, progress) -> Optional[str]:
+        referer = candidate.referer or candidate.url
+        user_agent = self.config.get("user_agent")
+
+        cmd = [
+            "curl", "-L",
+            "-A", user_agent,
+            "-H", f"Referer: {referer}",
+            "-o", final_path,
+            candidate.url
+        ]
+
+        try:
+            log("Downloading direct media file via curl...")
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if res.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                progress(100.0)
+                log("Direct download completed!")
+                return final_path
+        except Exception as e:
+            log(f"Direct download error: {e}")
+        return None

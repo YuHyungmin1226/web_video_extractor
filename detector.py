@@ -2,10 +2,12 @@
 Web Video Detection Module
 Detects video streams (HLS m3u8, direct MP4, video tags, embedded players) in arbitrary web pages.
 """
+import html
 import re
 import urllib.parse
 import subprocess
 from typing import Dict, List, Optional
+
 try:
     import yt_dlp
 except ImportError:
@@ -199,21 +201,23 @@ class VideoDetector:
                     results.append(full_url)
         return results
 
-    def _extract_title(self, html: str) -> str:
+    def _extract_title(self, raw_html: str) -> str:
+        raw_title = ""
         # og:title
-        m = re.search(r'<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        m = re.search(r'<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']+)["\']', raw_html, re.IGNORECASE)
         if not m:
-            m = re.search(r'<meta\s+content=["\']([^"\']+)["\']\s+property=["\']og:title["\']', html, re.IGNORECASE)
+            m = re.search(r'<meta\s+content=["\']([^"\']+)["\']\s+property=["\']og:title["\']', raw_html, re.IGNORECASE)
         if m:
-            return m.group(1).strip()
+            raw_title = m.group(1).strip()
+        else:
+            # <title>
+            m = re.search(r'<title[^>]*>(.*?)</title>', raw_html, re.IGNORECASE | re.DOTALL)
+            if m:
+                raw_title = re.sub(r'\s+', ' ', m.group(1)).strip()
 
-        # <title>
-        m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-        if m:
-            return re.sub(r'\s+', ' ', m.group(1)).strip()
-        return ""
+        return html.unescape(raw_title) if raw_title else ""
 
-    def _extract_video_tags(self, html: str, base_url: str) -> List[str]:
+    def _extract_video_tags(self, raw_html: str, base_url: str) -> List[str]:
         results = []
         # video, source tags
         patterns = [
@@ -223,13 +227,14 @@ class VideoDetector:
             r'meta\s+property=["\']og:video(?::url)?["\']\s+content=["\']([^"\']+)["\']'
         ]
         for pattern in patterns:
-            for match in re.finditer(pattern, html, re.IGNORECASE):
-                url = match.group(1).strip()
+            for match in re.finditer(pattern, raw_html, re.IGNORECASE):
+                url = html.unescape(match.group(1).strip())
                 if url and not url.startswith('blob:') and not url.startswith('data:'):
                     full_url = urllib.parse.urljoin(base_url, url)
                     if full_url not in results:
                         results.append(full_url)
         return results
+
 
     def _extract_js_media_urls(self, html: str, base_url: str) -> List[str]:
         results = []

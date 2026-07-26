@@ -9,13 +9,14 @@ def test_extract_title():
     html = '''
     <html>
     <head>
-        <meta property="og:title" content="Sample Movie Title | Site" />
+        <meta property="og:title" content="Sample &amp; Movie Title &#39;Test&#39; | Site" />
     </head>
     <body></body>
     </html>
     '''
     title = detector._extract_title(html)
-    assert title == "Sample Movie Title | Site"
+    assert title == "Sample & Movie Title 'Test' | Site"
+
 
 def test_extract_video_tags():
     detector = VideoDetector()

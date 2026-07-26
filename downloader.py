@@ -194,6 +194,8 @@ class VideoDownloader:
         temp_dir = tempfile.mkdtemp(prefix="web_video_hls_")
         ts_files = [None] * total_segments
         completed_count = 0
+        import threading
+        progress_lock = threading.Lock()
 
         def download_segment(idx: int, seg_path: str):
             nonlocal completed_count
@@ -212,8 +214,10 @@ class VideoDownloader:
             subprocess.run(cmd, check=False)
             if os.path.exists(out_ts) and os.path.getsize(out_ts) > 0:
                 ts_files[idx] = out_ts
-                completed_count += 1
-                progress((completed_count / total_segments) * 95.0)
+                with progress_lock:
+                    completed_count += 1
+                    current = completed_count
+                progress((current / total_segments) * 95.0)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
             futures = [executor.submit(download_segment, i, seg) for i, seg in enumerate(segments)]
@@ -236,7 +240,9 @@ class VideoDownloader:
             concat_list = os.path.join(temp_dir, "concat.txt")
             with open(concat_list, "w", encoding="utf-8") as f:
                 for ts in valid_ts:
-                    f.write(f"file '{ts}'\n")
+                    safe_ts = ts.replace("'", "'\\''")
+                    f.write(f"file '{safe_ts}'\n")
+
 
             ff_cmd = [
                 self.ffmpeg_path, "-y",

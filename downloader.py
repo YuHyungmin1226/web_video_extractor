@@ -91,10 +91,11 @@ class VideoDownloader:
 
             path = self.download(
                 candidate,
-                output_filename=f"{i:02d}_{candidate.title}",
+                output_filename=candidate.title,
                 status_callback=status_callback,
                 progress_callback=single_progress
             )
+
             if path and os.path.exists(path):
                 saved_files.append(path)
 

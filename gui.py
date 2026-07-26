@@ -1,8 +1,10 @@
 """
 PySide6 Graphical User Interface for Web Video Extractor
 """
+import re
 import sys
 from pathlib import Path
+
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout,

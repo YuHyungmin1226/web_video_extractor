@@ -23,3 +23,25 @@ def test_check_ffmpeg_installed():
     # On this machine, FFmpeg is at /Users/yhm/.local/ffmpeg/ffmpeg
     assert isinstance(ff, str)
     assert len(ff) > 0
+
+def test_download_skip_existing(tmp_path):
+    from downloader import VideoDownloader
+    from detector import VideoCandidate
+    import os
+
+    cfg = Config()
+    cfg.set("download_path", str(tmp_path))
+    downloader = VideoDownloader(config=cfg)
+
+    # Create dummy existing file
+    existing_file = tmp_path / "existing_video.mp4"
+    existing_file.write_bytes(b"dummy data")
+
+    cand = VideoCandidate(url="https://example.com/stream.m3u8", title="existing_video", video_type="m3u8")
+    
+    logs = []
+    res = downloader.download(cand, output_filename="existing_video", status_callback=lambda m: logs.append(m))
+    
+    assert res == str(existing_file)
+    assert any("already exists" in log for log in logs)
+

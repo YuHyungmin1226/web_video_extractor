@@ -50,9 +50,16 @@ class VideoDownloader:
             if progress_callback:
                 progress_callback(p)
 
+        # Skip download if destination file already exists
+        if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+            log(f"⏩ File already exists, skipping download: {final_path}")
+            progress(100.0)
+            return final_path
+
         log(f"Starting download: {candidate.title}")
         log(f"Stream type: {candidate.video_type}")
         log(f"Output target: {final_path}")
+
 
         if candidate.video_type == "ytdlp":
             return self._download_ytdlp(candidate, final_path, log, progress)

@@ -205,7 +205,7 @@ class VideoDetector:
 
     def _extract_pagination_links(self, html: str, base_url: str) -> List[str]:
         results = []
-        for m in re.finditer(r'href=["\']([^"\']*\?page=\d+[^"\']*)["\']', html, re.IGNORECASE):
+        for m in re.finditer(r'href=["\']([^"\']*[?&]page=\d+[^"\']*)["\']', html, re.IGNORECASE):
             href = m.group(1).strip()
             if href and not href.startswith('javascript:'):
                 full_url = urllib.parse.urljoin(base_url, href)

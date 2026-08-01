@@ -55,6 +55,51 @@ def test_extract_pagination_links():
     assert "https://mingky05.live/kor?page=2" in pages
 
 
+def test_extract_pagination_links_when_page_is_not_first_query_param():
+    # Search-result pages already carry a query string (e.g. ?stx=term), so their
+    # pagination links come out as "...&page=2" rather than "...?page=2".
+    detector = VideoDetector()
+    html = '''
+    <a href="?stx=term&page=1">1</a>
+    <a href="?stx=term&page=2">2</a>
+    <a href="?stx=term&page=3">3</a>
+    '''
+    pages = detector._extract_pagination_links(html, "https://mingky05.live/search?stx=term")
+    assert len(pages) == 3
+    assert "https://mingky05.live/search?stx=term&page=2" in pages
+    assert "https://mingky05.live/search?stx=term&page=3" in pages
+
+
+def test_detect_search_results_traverses_beyond_first_page(monkeypatch):
+    # Given: a search-style URL (pre-existing query param) whose page 2 is only
+    # reachable via an "&page=2" pagination link, not "?page=2"
+    pages = {
+        "https://example.com/search?stx=term": (
+            '<a href="/movie/1">Movie 1</a>'
+            '<a href="?stx=term&page=2">2</a>'
+        ),
+        "https://example.com/search?stx=term&page=2": '<a href="/movie/2">Movie 2</a>',
+        "https://example.com/movie/1": '<video src="https://cdn.example/1.mp4"></video>',
+        "https://example.com/movie/2": '<video src="https://cdn.example/2.mp4"></video>',
+    }
+    detector = VideoDetector()
+    monkeypatch.setattr(detector_module, "yt_dlp", None)
+    monkeypatch.setattr(
+        detector,
+        "fetch_html_curl",
+        lambda url, referer="": pages.get(url, ""),
+    )
+
+    # When
+    candidates = detector.detect("https://example.com/search?stx=term", max_pages=0)
+
+    # Then: videos from both page 1 and the "&page=2" pagination page are found
+    assert {candidate.url for candidate in candidates} == {
+        "https://cdn.example/1.mp4",
+        "https://cdn.example/2.mp4",
+    }
+
+
 def test_detect_all_pages_discovers_later_pagination_block(monkeypatch):
     # Given
     first_page = '<a href="/movie/1">Movie 1</a>' + ''.join(

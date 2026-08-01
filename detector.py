@@ -142,17 +142,25 @@ class VideoDetector:
         if movie_links and (max_pages == 0 or max_pages > 1):
             pagination_pages = self._extract_pagination_links(html, page_url)
             visited_pages = {page_url, page_url.rstrip('/') + '?page=1', page_url.rstrip('/') + '/?page=1'}
+            queued_pages = set(pagination_pages)
             
             pages_fetched = 1
-            for page_link in pagination_pages:
+            page_index = 0
+            while page_index < len(pagination_pages):
                 if max_pages > 0 and pages_fetched >= max_pages:
                     break
+                page_link = pagination_pages[page_index]
+                page_index += 1
                 if page_link in visited_pages:
                     continue
                 visited_pages.add(page_link)
                 pages_fetched += 1
                 p_html = self.fetch_html_curl(page_link, referer=page_url)
                 if p_html:
+                    for next_page in self._extract_pagination_links(p_html, page_link):
+                        if next_page not in visited_pages and next_page not in queued_pages:
+                            pagination_pages.append(next_page)
+                            queued_pages.add(next_page)
                     extra_movies = self._extract_movie_page_links(p_html, page_link)
                     for m_link in extra_movies:
                         if m_link not in movie_links:

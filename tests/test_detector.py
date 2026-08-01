@@ -2,6 +2,7 @@
 Unit tests for VideoDetector module
 """
 import pytest
+import detector as detector_module
 from detector import VideoDetector
 
 def test_extract_title():
@@ -54,3 +55,111 @@ def test_extract_pagination_links():
     assert "https://mingky05.live/kor?page=2" in pages
 
 
+def test_detect_all_pages_discovers_later_pagination_block(monkeypatch):
+    # Given
+    first_page = '<a href="/movie/1">Movie 1</a>' + ''.join(
+        f'<a href="?page={page}">{page}</a>' for page in range(2, 11)
+    )
+    pages = {
+        "https://example.com/catalog": first_page,
+        "https://example.com/catalog?page=10": (
+            '<a href="/movie/10">Movie 10</a>'
+            '<a href="?page=11">11</a>'
+        ),
+        "https://example.com/catalog?page=11": '<a href="/movie/11">Movie 11</a>',
+        "https://example.com/movie/1": '<video src="https://cdn.example/1.mp4"></video>',
+        "https://example.com/movie/10": '<video src="https://cdn.example/10.mp4"></video>',
+        "https://example.com/movie/11": '<video src="https://cdn.example/11.mp4"></video>',
+    }
+    detector = VideoDetector()
+    monkeypatch.setattr(detector_module, "yt_dlp", None)
+    monkeypatch.setattr(
+        detector,
+        "fetch_html_curl",
+        lambda url, referer="": pages.get(url, ""),
+    )
+
+    # When
+    candidates = detector.detect("https://example.com/catalog", max_pages=0)
+
+    # Then
+    assert {candidate.url for candidate in candidates} == {
+        "https://cdn.example/1.mp4",
+        "https://cdn.example/10.mp4",
+        "https://cdn.example/11.mp4",
+    }
+
+
+def test_detect_all_pages_ignores_duplicate_pagination_links(monkeypatch):
+    # Given
+    pages = {
+        "https://example.com/catalog": (
+            '<a href="/movie/1">Movie 1</a>'
+            '<a href="?page=2">2</a>'
+            '<a href="?page=2">2 duplicate</a>'
+        ),
+        "https://example.com/catalog?page=2": (
+            '<a href="/movie/2">Movie 2</a>'
+            '<a href="/catalog">1</a>'
+            '<a href="?page=2">2</a>'
+        ),
+        "https://example.com/movie/1": '<video src="https://cdn.example/1.mp4"></video>',
+        "https://example.com/movie/2": '<video src="https://cdn.example/2.mp4"></video>',
+    }
+    fetched_urls = []
+    detector = VideoDetector()
+    monkeypatch.setattr(detector_module, "yt_dlp", None)
+
+    def fetch_html(url, referer=""):
+        fetched_urls.append(url)
+        return pages.get(url, "")
+
+    monkeypatch.setattr(detector, "fetch_html_curl", fetch_html)
+
+    # When
+    candidates = detector.detect("https://example.com/catalog", max_pages=0)
+
+    # Then
+    assert {candidate.url for candidate in candidates} == {
+        "https://cdn.example/1.mp4",
+        "https://cdn.example/2.mp4",
+    }
+    assert fetched_urls.count("https://example.com/catalog?page=2") == 1
+
+
+def test_detect_respects_finite_page_limit(monkeypatch):
+    # Given
+    pages = {
+        "https://example.com/catalog": (
+            '<a href="/movie/1">Movie 1</a>'
+            '<a href="?page=2">2</a>'
+            '<a href="?page=3">3</a>'
+        ),
+        "https://example.com/catalog?page=2": (
+            '<a href="/movie/2">Movie 2</a>'
+            '<a href="?page=4">4</a>'
+        ),
+        "https://example.com/catalog?page=3": '<a href="/movie/3">Movie 3</a>',
+        "https://example.com/movie/1": '<video src="https://cdn.example/1.mp4"></video>',
+        "https://example.com/movie/2": '<video src="https://cdn.example/2.mp4"></video>',
+        "https://example.com/movie/3": '<video src="https://cdn.example/3.mp4"></video>',
+    }
+    fetched_urls = []
+    detector = VideoDetector()
+    monkeypatch.setattr(detector_module, "yt_dlp", None)
+
+    def fetch_html(url, referer=""):
+        fetched_urls.append(url)
+        return pages.get(url, "")
+
+    monkeypatch.setattr(detector, "fetch_html_curl", fetch_html)
+
+    # When
+    candidates = detector.detect("https://example.com/catalog", max_pages=2)
+
+    # Then
+    assert {candidate.url for candidate in candidates} == {
+        "https://cdn.example/1.mp4",
+        "https://cdn.example/2.mp4",
+    }
+    assert "https://example.com/catalog?page=3" not in fetched_urls

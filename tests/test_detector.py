@@ -127,6 +127,32 @@ def test_detect_all_pages_ignores_duplicate_pagination_links(monkeypatch):
     assert fetched_urls.count("https://example.com/catalog?page=2") == 1
 
 
+def test_fetch_html_curl_encodes_korean_url_and_referer(monkeypatch):
+    # Given: a page URL and referer that both contain raw Korean characters
+    captured_cmd = {}
+
+    class FakeResult:
+        returncode = 0
+        stdout = "<html></html>"
+
+    def fake_run(cmd, **kwargs):
+        captured_cmd["cmd"] = cmd
+        return FakeResult()
+
+    monkeypatch.setattr(detector_module.subprocess, "run", fake_run)
+    detector = VideoDetector()
+
+    # When
+    detector.fetch_html_curl(
+        "https://example.com/한글경로/영화",
+        referer="https://example.com/한글카테고리/목록",
+    )
+
+    # Then: every argument passed to curl (including the Referer header) is ASCII
+    for arg in captured_cmd["cmd"]:
+        assert arg.isascii(), f"non-ASCII curl argument leaked through: {arg!r}"
+
+
 def test_detect_respects_finite_page_limit(monkeypatch):
     # Given
     pages = {

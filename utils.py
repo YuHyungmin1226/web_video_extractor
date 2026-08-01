@@ -6,7 +6,51 @@ import platform
 import re
 import shutil
 import subprocess
+import urllib.parse
 from pathlib import Path
+
+_URL_SAFE_CHARS = "/%:@!$&'()*+,;=~-._"
+
+
+def normalize_url(url: str) -> str:
+    """Convert a URL that may contain raw Unicode (e.g. a Korean hostname
+    or path/query typed or pasted by the user) into a fully ASCII URL
+    safe to use as a curl argument or in an HTTP header value.
+
+    curl auto-encodes non-ASCII characters in the *target* URL on modern
+    versions, but it never encodes header values (e.g. `-H "Referer: ..."`),
+    so a raw Unicode referer is sent as literal UTF-8 bytes. That violates
+    RFC 7230 and gets silently rejected (400/403) by strict servers and
+    WAFs such as Cloudflare. Normalizing every URL before it is used keeps
+    behavior consistent regardless of curl version or where the URL is used.
+    """
+    if not url:
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+
+    netloc = parts.netloc
+    if netloc:
+        try:
+            netloc.encode("ascii")
+        except UnicodeEncodeError:
+            userinfo, _, hostport = netloc.rpartition("@")
+            host, _, port = hostport.partition(":")
+            try:
+                host = host.encode("idna").decode("ascii")
+            except UnicodeError:
+                host = urllib.parse.quote(host)
+            netloc = f"{host}:{port}" if port else host
+            if userinfo:
+                netloc = f"{userinfo}@{netloc}"
+
+    path = urllib.parse.quote(parts.path, safe=_URL_SAFE_CHARS)
+    query = urllib.parse.quote(parts.query, safe=_URL_SAFE_CHARS + "?")
+    fragment = urllib.parse.quote(parts.fragment, safe=_URL_SAFE_CHARS + "?")
+
+    return urllib.parse.urlunsplit((parts.scheme, netloc, path, query, fragment))
 
 def check_ffmpeg_installed() -> str:
     """Find FFmpeg binary across PATH and common installation directories."""

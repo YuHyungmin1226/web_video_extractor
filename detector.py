@@ -8,6 +8,8 @@ import urllib.parse
 import subprocess
 from typing import Dict, List, Optional
 
+from utils import normalize_url
+
 try:
     import yt_dlp
 except ImportError:
@@ -37,13 +39,14 @@ class VideoDetector:
 
     def fetch_html_curl(self, url: str, referer: str = "") -> str:
         """Fetch page HTML using curl (supports HTTP/2 and modern TLS signatures)."""
+        url = normalize_url(url)
         cmd = [
             "curl", "-s", "-L",
             "-A", self.user_agent,
             "--max-time", "15"
         ]
         if referer:
-            cmd.extend(["-H", f"Referer: {referer}"])
+            cmd.extend(["-H", f"Referer: {normalize_url(referer)}"])
         cmd.append(url)
 
         try:
@@ -59,6 +62,7 @@ class VideoDetector:
         page_url = page_url.strip()
         if not page_url:
             return []
+        page_url = normalize_url(page_url)
 
         # 0. Check if input URL itself is a direct media file
         if re.search(r'\.(m3u8|mp4|webm|mkv|flv)(\?.*)?$', page_url, re.IGNORECASE):

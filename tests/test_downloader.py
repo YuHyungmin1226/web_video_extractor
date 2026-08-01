@@ -2,8 +2,29 @@
 Unit tests for VideoDownloader & Utils
 """
 import pytest
-from utils import sanitize_filename, format_bytes, check_ffmpeg_installed
+from utils import sanitize_filename, format_bytes, check_ffmpeg_installed, normalize_url
 from config import Config
+
+def test_normalize_url_encodes_korean_path_and_query():
+    url = normalize_url("https://example.com/한글경로/영화?제목=테스트")
+    assert url == "https://example.com/%ED%95%9C%EA%B8%80%EA%B2%BD%EB%A1%9C/%EC%98%81%ED%99%94?%EC%A0%9C%EB%AA%A9=%ED%85%8C%EC%8A%A4%ED%8A%B8"
+    assert url.isascii()
+
+def test_normalize_url_encodes_korean_hostname_as_idna():
+    url = normalize_url("http://한글사이트.com/영화")
+    assert url.startswith("http://xn--")
+    assert url.isascii()
+
+def test_normalize_url_is_idempotent_on_already_encoded_url():
+    url = "https://example.com/%ED%95%9C%EA%B8%80?a=1"
+    assert normalize_url(url) == url
+
+def test_normalize_url_leaves_ascii_url_unchanged():
+    url = "https://example.com/movie/1?page=2"
+    assert normalize_url(url) == url
+
+def test_normalize_url_empty_string():
+    assert normalize_url("") == ""
 
 def test_sanitize_filename():
     raw = "Invalid / File : Name * With ? Special < Characters > |"

@@ -19,7 +19,7 @@ except ImportError:
 
 from config import Config
 from detector import VideoCandidate
-from utils import check_ffmpeg_installed, sanitize_filename
+from utils import check_ffmpeg_installed, normalize_url, sanitize_filename
 
 class VideoDownloader:
     def __init__(self, config: Optional[Config] = None):
@@ -109,6 +109,8 @@ class VideoDownloader:
             log("yt-dlp is not installed in the current Python environment.")
             return None
         output_template = final_path.rsplit('.', 1)[0] + '.%(ext)s'
+        url = normalize_url(candidate.url)
+        referer = normalize_url(candidate.referer or candidate.url)
 
         ydl_opts = {
             'outtmpl': output_template,
@@ -118,7 +120,7 @@ class VideoDownloader:
             'quiet': True,
             'http_headers': {
                 'User-Agent': self.config.get("user_agent"),
-                'Referer': candidate.referer or candidate.url
+                'Referer': referer
             }
         }
 
@@ -134,7 +136,7 @@ class VideoDownloader:
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([candidate.url])
+                ydl.download([url])
             progress(100.0)
             log("Download completed successfully!")
             return final_path
@@ -143,7 +145,8 @@ class VideoDownloader:
             return None
 
     def _download_hls_m3u8(self, candidate: VideoCandidate, final_path: str, log, progress) -> Optional[str]:
-        referer = candidate.referer or candidate.url
+        referer = normalize_url(candidate.referer or candidate.url)
+        candidate_url = normalize_url(candidate.url)
         user_agent = self.config.get("user_agent")
         max_threads = int(self.config.get("threads", 8))
 
@@ -153,7 +156,7 @@ class VideoDownloader:
             "curl", "-s", "-L",
             "-A", user_agent,
             "-H", f"Referer: {referer}",
-            candidate.url
+            candidate_url
         ]
         try:
             res = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=15)
@@ -166,13 +169,13 @@ class VideoDownloader:
             return None
 
         # 2. Check if master playlist containing variant stream playlists
-        base_url = candidate.url.rsplit('/', 1)[0] + '/'
+        base_url = candidate_url.rsplit('/', 1)[0] + '/'
         lines = [line.strip() for line in m3u8_content.splitlines() if line.strip()]
-        
+
         # Check for sub-playlists (.m3u8)
         sub_playlists = [line for line in lines if not line.startswith('#') and '.m3u8' in line.lower()]
         if sub_playlists:
-            target_sub = urllib.parse.urljoin(base_url, sub_playlists[-1]) # take highest resolution variant
+            target_sub = normalize_url(urllib.parse.urljoin(base_url, sub_playlists[-1])) # take highest resolution variant
             log(f"Resolved variant sub-playlist: {target_sub}")
             res2 = subprocess.run([
                 "curl", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", target_sub
@@ -199,7 +202,7 @@ class VideoDownloader:
 
         def download_segment(idx: int, seg_path: str):
             nonlocal completed_count
-            seg_url = urllib.parse.urljoin(base_url, seg_path)
+            seg_url = normalize_url(urllib.parse.urljoin(base_url, seg_path))
             out_ts = os.path.join(temp_dir, f"seg_{idx:05d}.ts")
 
             cmd = [
@@ -278,7 +281,8 @@ class VideoDownloader:
             return None
 
     def _download_direct(self, candidate: VideoCandidate, final_path: str, log, progress) -> Optional[str]:
-        referer = candidate.referer or candidate.url
+        referer = normalize_url(candidate.referer or candidate.url)
+        url = normalize_url(candidate.url)
         user_agent = self.config.get("user_agent")
 
         cmd = [
@@ -286,7 +290,7 @@ class VideoDownloader:
             "-A", user_agent,
             "-H", f"Referer: {referer}",
             "-o", final_path,
-            candidate.url
+            url
         ]
 
         try:

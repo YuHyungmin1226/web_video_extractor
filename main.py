@@ -10,6 +10,9 @@ import sys
 
 # Auto-re-exec using local .venv if available and dependencies are missing in global python.
 # venv layout differs by OS: Windows uses "Scripts\\python.exe", macOS/Linux use "bin/python".
+# Skipped entirely in a PyInstaller build (sys.frozen): a frozen build carries its
+# own bundled interpreter and dependencies, and the extraction directory next to
+# it has no ".venv" of its own to relaunch into.
 #
 # Loop guard: an env var sentinel, not a sys.executable/venv_py path comparison.
 # venv's python is typically a symlink back to the base interpreter (this is the
@@ -18,7 +21,7 @@ import sys
 # under the venv, which silently skips the re-exec entirely.
 _venv_dir = Path(__file__).resolve().parent / ".venv"
 venv_py = _venv_dir / "Scripts" / "python.exe" if sys.platform == "win32" else _venv_dir / "bin" / "python"
-if venv_py.exists() and not os.environ.get("_WVE_VENV_REEXEC"):
+if not getattr(sys, "frozen", False) and venv_py.exists() and not os.environ.get("_WVE_VENV_REEXEC"):
     try:
         import PySide6
         import yt_dlp
@@ -93,6 +96,23 @@ def run_cli(url: str, output: str = "", download_all: bool = False, max_pages: i
             sys.exit(1)
 
 
+def _hide_windows_console_if_frozen() -> None:
+    """The packaged Windows build keeps a console subsystem (so --cli prints
+    normally when run from a terminal/script), but that leaves a console box
+    behind the GUI when double-clicked into GUI mode. Hide it in that case.
+
+    No-op in dev mode: `python main.py` runs inside the user's own terminal,
+    which must never be hidden. No-op on macOS/Linux: ctypes.windll only
+    exists on Windows, and neither has this console/GUI split in the first
+    place (see build.py for why only Windows needs a console subsystem)."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    import ctypes
+    console_wnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if console_wnd:
+        ctypes.windll.user32.ShowWindow(console_wnd, 0)  # SW_HIDE
+
+
 def main():
     parser = argparse.ArgumentParser(description="Web Video Extractor & Downloader")
     parser.add_argument("--url", type=str, help="Web page URL to extract and download video from")
@@ -109,6 +129,7 @@ def main():
             sys.exit(1)
         run_cli(args.url, args.output, download_all=args.all, max_pages=args.max_pages)
     else:
+        _hide_windows_console_if_frozen()
         main_gui()
 
 

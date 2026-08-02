@@ -6,10 +6,32 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import urllib.parse
 from pathlib import Path
 
+IS_WINDOWS = sys.platform.startswith("win")
+IS_MAC = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
+
+# When this app is packaged with PyInstaller's --windowed flag (no console),
+# Windows still pops up a console window for every child process it doesn't
+# recognize as GUI-attached — curl/ffmpeg here, called constantly (once per
+# HLS segment, dozens at a time via the thread pool). CREATE_NO_WINDOW is a
+# Windows-only subprocess flag; it does not exist in the `subprocess` module
+# on macOS/Linux, so it must only ever be referenced inside this branch.
+_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
+
 _URL_SAFE_CHARS = "/%:@!$&'()*+,;=~-._"
+
+
+def run_hidden(cmd, **kwargs):
+    """subprocess.run() wrapper for curl/ffmpeg child processes that suppresses
+    the console window a --windowed PyInstaller build would otherwise flash
+    open on Windows for each one. A plain `python main.py` run in a terminal
+    is unaffected either way."""
+    kwargs.setdefault("creationflags", _SUBPROCESS_FLAGS)
+    return subprocess.run(cmd, **kwargs)
 
 
 def normalize_url(url: str) -> str:
@@ -55,7 +77,7 @@ def normalize_url(url: str) -> str:
 def check_ffmpeg_installed() -> str:
     """Find FFmpeg binary across PATH and common installation directories."""
     # 1. Check PATH via shutil
-    ffmpeg_bin = shutil.which("ffmpeg.exe") if platform.system() == "Windows" else shutil.which("ffmpeg")
+    ffmpeg_bin = shutil.which("ffmpeg.exe") if IS_WINDOWS else shutil.which("ffmpeg")
     if ffmpeg_bin and _test_ffmpeg(ffmpeg_bin):
         return ffmpeg_bin
 
@@ -78,7 +100,7 @@ def check_ffmpeg_installed() -> str:
 
 def _test_ffmpeg(ffmpeg_path: str) -> bool:
     try:
-        res = subprocess.run([ffmpeg_path, "-version"], capture_output=True, text=True, timeout=5)
+        res = run_hidden([ffmpeg_path, "-version"], capture_output=True, text=True, timeout=5)
         return res.returncode == 0
     except Exception:
         return False
@@ -88,11 +110,11 @@ def check_curl_installed() -> bool:
     macOS, but minimal Linux installs (e.g. server/container base images)
     often omit it, so this is worth surfacing explicitly rather than letting
     every curl-based request fail silently later."""
-    curl_bin = shutil.which("curl.exe") if platform.system() == "Windows" else shutil.which("curl")
+    curl_bin = shutil.which("curl.exe") if IS_WINDOWS else shutil.which("curl")
     if not curl_bin:
         return False
     try:
-        res = subprocess.run([curl_bin, "--version"], capture_output=True, text=True, timeout=5)
+        res = run_hidden([curl_bin, "--version"], capture_output=True, text=True, timeout=5)
         return res.returncode == 0
     except Exception:
         return False
@@ -138,9 +160,9 @@ def open_folder(folder_path: str) -> bool:
     if not os.path.exists(folder_path):
         return False
     try:
-        if platform.system() == 'Darwin':
+        if IS_MAC:
             subprocess.run(['open', folder_path], check=True)
-        elif platform.system() == 'Windows':
+        elif IS_WINDOWS:
             os.startfile(folder_path)
         else:
             subprocess.run(['xdg-open', folder_path], check=True)

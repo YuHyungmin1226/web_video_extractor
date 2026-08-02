@@ -20,7 +20,7 @@ Web Video Extractor는 임의의 웹페이지 URL(예: `https://mingky05.live/mo
    - 보호된 스트림에 대한 FFmpeg 기반 폴백 스트림 녹화 기능 제공
 
 4. **PySide6 GUI & CLI 완벽 지원**:
-   - 직관적이고 세련된 다크 테마 GUI 제공
+   - 테두리 없는(frameless) 미니멀 다크 테마 GUI: 커스텀 타이틀바(드래그 이동), 가장자리 드래그로 창 크기 조절, 최소화·최대화·닫기 버튼 제공
    - 자동화 터미널 실행을 위한 CLI 옵션 제공
 
 ---
@@ -59,6 +59,24 @@ python main.py --cli --url "https://mingky05.live/movie/3feec10550?page=1"
 ```
 
 ---
+
+## 🛠 빌드 방법 (직접 실행 파일 만들기)
+
+의존성이 설치된 가상환경에서 아래 명령어를 실행하면 `dist/` 폴더 내에 실행 파일(Windows) 또는 `.app` 번들(macOS), 단일 바이너리(Linux)가 생성됩니다.
+
+```bash
+python build.py
+```
+
+빌드는 실행하는 OS에 맞춰서만 만들어지며(교차 컴파일 미지원), `curl`/`ffmpeg`는 실행 파일에 내장되지 않고 실행 시점에 시스템 PATH에서 찾습니다(위 "OS별 사전 요구사항" 참고).
+
+| OS | 산출물 | 콘솔 창 처리 |
+|---|---|---|
+| Windows | 단일 파일 `dist/WebVideoExtractor.exe` | 콘솔 서브시스템으로 빌드되어 `--cli`가 터미널에서 정상 출력됩니다. GUI 모드로 실행(인자 없이 실행)하면 앱이 시작 직후 콘솔 창을 스스로 숨깁니다. 더블클릭 실행 시 아주 짧게(1초 미만) 콘솔 창이 깜빡일 수 있는데, 이는 GUI+CLI 겸용 실행 파일에서 흔히 나타나는 정상적인 동작입니다. |
+| macOS | `dist/WebVideoExtractor.app` | `--windowed`로 빌드되어 Finder 실행 시 콘솔이 뜨지 않으며, 같은 실행 파일을 터미널에서 `.app/Contents/MacOS/WebVideoExtractor --cli ...`로 직접 실행해도 표준출력이 정상 동작합니다(직접 빌드해 검증됨). |
+| Linux | 단일 파일 `dist/WebVideoExtractor` | Linux는 실행 파일 서브시스템 구분이 없어 별도 처리가 필요 없습니다. |
+
+> 💡 저장소에 포함된 `icon.png`(모든 OS 공용, GUI 창 아이콘) / `icon.ico`(Windows) / `icon.icns`(macOS)를 `build.py`가 자동으로 감지해 실행 파일에 아이콘을 포함합니다. 다른 아이콘으로 바꾸고 싶다면 같은 파일명으로 교체하면 되며, 아이콘 파일이 없어도 빌드는 정상적으로 진행됩니다.
 
 ## 🧪 테스트 실행 (Pytest)
 

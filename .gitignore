@@ -26,3 +26,8 @@ concat.txt
 .pytest_cache/
 .coverage
 htmlcov/
+
+# PyInstaller build output (see build.py)
+build/
+dist/
+*.spec

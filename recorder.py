@@ -6,7 +6,7 @@ import os
 import subprocess
 from typing import Callable, Optional
 from config import Config
-from utils import check_ffmpeg_installed, sanitize_filename
+from utils import check_ffmpeg_installed, run_hidden, sanitize_filename
 
 class StreamRecorder:
     def __init__(self, config: Optional[Config] = None):
@@ -51,7 +51,7 @@ class StreamRecorder:
         try:
             if status_callback:
                 status_callback(f"Recording stream to {final_path}...")
-            res = subprocess.run(cmd, capture_output=True, text=True)
+            res = run_hidden(cmd, capture_output=True, text=True)
             if res.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
                 if status_callback:
                     status_callback("Stream recording finished successfully!")

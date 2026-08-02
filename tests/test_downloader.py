@@ -66,6 +66,11 @@ def test_download_skip_existing(tmp_path):
     import os
 
     cfg = Config()
+    # Config always persists to ~/.web_video_extractor_config.json; redirect
+    # it to a throwaway file so this test doesn't overwrite the real user
+    # config's download_path with this test's tmp_path (which is deleted
+    # once the test run ends, silently breaking the actual app afterward).
+    cfg.config_file = tmp_path / "test_config.json"
     cfg.set("download_path", str(tmp_path))
     downloader = VideoDownloader(config=cfg)
 

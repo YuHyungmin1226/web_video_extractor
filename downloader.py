@@ -6,7 +6,6 @@ import concurrent.futures
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import urllib.parse
 from typing import Callable, List, Optional
@@ -19,7 +18,7 @@ except ImportError:
 
 from config import Config
 from detector import VideoCandidate
-from utils import check_ffmpeg_installed, normalize_url, sanitize_filename
+from utils import check_ffmpeg_installed, normalize_url, run_hidden, sanitize_filename
 
 class VideoDownloader:
     def __init__(self, config: Optional[Config] = None):
@@ -159,7 +158,7 @@ class VideoDownloader:
             candidate_url
         ]
         try:
-            res = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=15)
+            res = run_hidden(curl_cmd, capture_output=True, text=True, timeout=15)
             if res.returncode != 0 or not res.stdout.strip():
                 log("Failed to fetch m3u8 playlist.")
                 return None
@@ -177,7 +176,7 @@ class VideoDownloader:
         if sub_playlists:
             target_sub = normalize_url(urllib.parse.urljoin(base_url, sub_playlists[-1])) # take highest resolution variant
             log(f"Resolved variant sub-playlist: {target_sub}")
-            res2 = subprocess.run([
+            res2 = run_hidden([
                 "curl", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", target_sub
             ], capture_output=True, text=True, timeout=15)
             if res2.returncode == 0 and res2.stdout.strip():
@@ -214,7 +213,7 @@ class VideoDownloader:
                 "--max-time", "30",
                 seg_url
             ]
-            subprocess.run(cmd, check=False)
+            run_hidden(cmd, check=False)
             if os.path.exists(out_ts) and os.path.getsize(out_ts) > 0:
                 ts_files[idx] = out_ts
                 with progress_lock:
@@ -255,7 +254,7 @@ class VideoDownloader:
                 "-c", "copy",
                 final_path
             ]
-            res = subprocess.run(ff_cmd, capture_output=True, text=True)
+            res = run_hidden(ff_cmd, capture_output=True, text=True)
             if res.returncode == 0 and os.path.exists(final_path):
                 progress(100.0)
                 log("Concatenation complete! Video saved successfully.")
@@ -295,7 +294,7 @@ class VideoDownloader:
 
         try:
             log("Downloading direct media file via curl...")
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            res = run_hidden(cmd, capture_output=True, text=True, timeout=120)
             if res.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
                 progress(100.0)
                 log("Direct download completed!")

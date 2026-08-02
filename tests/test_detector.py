@@ -1,6 +1,8 @@
 """
 Unit tests for VideoDetector module
 """
+import subprocess
+
 import pytest
 import detector as detector_module
 from detector import VideoDetector
@@ -184,7 +186,10 @@ def test_fetch_html_curl_encodes_korean_url_and_referer(monkeypatch):
         captured_cmd["cmd"] = cmd
         return FakeResult()
 
-    monkeypatch.setattr(detector_module.subprocess, "run", fake_run)
+    # fetch_html_curl calls utils.run_hidden(), a thin wrapper around the
+    # shared `subprocess` module object, so patching subprocess.run here
+    # (imported fresh, but the same singleton module) intercepts it too.
+    monkeypatch.setattr(subprocess, "run", fake_run)
     detector = VideoDetector()
 
     # When

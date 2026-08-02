@@ -5,10 +5,9 @@ Detects video streams (HLS m3u8, direct MP4, video tags, embedded players) in ar
 import html
 import re
 import urllib.parse
-import subprocess
 from typing import Dict, List, Optional
 
-from utils import normalize_url
+from utils import normalize_url, run_hidden
 
 try:
     import yt_dlp
@@ -50,7 +49,7 @@ class VideoDetector:
         cmd.append(url)
 
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            res = run_hidden(cmd, capture_output=True, text=True, timeout=15)
             if res.returncode == 0:
                 return res.stdout
         except Exception:

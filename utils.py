@@ -29,8 +29,21 @@ def run_hidden(cmd, **kwargs):
     """subprocess.run() wrapper for curl/ffmpeg child processes that suppresses
     the console window a --windowed PyInstaller build would otherwise flash
     open on Windows for each one. A plain `python main.py` run in a terminal
-    is unaffected either way."""
+    is unaffected either way.
+
+    Also pins text-mode decoding to UTF-8: curl's captured stdout is a web
+    response body (HTML/m3u8), which is UTF-8 in the overwhelming majority
+    of cases regardless of the machine's own locale. Without this,
+    text=True falls back to locale.getpreferredencoding() — cp949 on
+    Korean Windows — which raises UnicodeDecodeError on ordinary UTF-8
+    Korean text. errors="replace" keeps a genuinely mis-encoded response
+    (e.g. legacy EUC-KR pages) from crashing the read instead of just
+    garbling those particular characters.
+    """
     kwargs.setdefault("creationflags", _SUBPROCESS_FLAGS)
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
     return subprocess.run(cmd, **kwargs)
 
 

@@ -3,23 +3,30 @@ Web Video Extractor & Downloader Main Entry Point
 Supports both CLI mode and GUI mode.
 """
 import argparse
+import os
 import subprocess
 from pathlib import Path
 import sys
 
 # Auto-re-exec using local .venv if available and dependencies are missing in global python.
 # venv layout differs by OS: Windows uses "Scripts\\python.exe", macOS/Linux use "bin/python".
-_venv_dir = Path(__file__).parent / ".venv"
+#
+# Loop guard: an env var sentinel, not a sys.executable/venv_py path comparison.
+# venv's python is typically a symlink back to the base interpreter (this is the
+# default on macOS framework builds and plain `python3 -m venv`), so resolving
+# symlinks on both sides makes them compare equal even when NOT already running
+# under the venv, which silently skips the re-exec entirely.
+_venv_dir = Path(__file__).resolve().parent / ".venv"
 venv_py = _venv_dir / "Scripts" / "python.exe" if sys.platform == "win32" else _venv_dir / "bin" / "python"
-if venv_py.exists():
+if venv_py.exists() and not os.environ.get("_WVE_VENV_REEXEC"):
     try:
         import PySide6
         import yt_dlp
     except ImportError:
-        if Path(sys.executable).resolve() != venv_py.resolve():
-            # subprocess+exit (rather than os.execv) behaves identically across
-            # Windows/macOS/Linux and avoids platform-specific process-replacement quirks.
-            sys.exit(subprocess.run([str(venv_py)] + sys.argv).returncode)
+        # subprocess+exit (rather than os.execv) behaves identically across
+        # Windows/macOS/Linux and avoids platform-specific process-replacement quirks.
+        os.environ["_WVE_VENV_REEXEC"] = "1"
+        sys.exit(subprocess.run([str(venv_py)] + sys.argv).returncode)
 
 from detector import VideoDetector
 from downloader import VideoDownloader

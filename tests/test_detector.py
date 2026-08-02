@@ -198,6 +198,36 @@ def test_fetch_html_curl_encodes_korean_url_and_referer(monkeypatch):
         assert arg.isascii(), f"non-ASCII curl argument leaked through: {arg!r}"
 
 
+def test_detect_iframe_js_media_url_gets_correct_video_type_and_referer(monkeypatch):
+    # Given: a page embedding an iframe whose inline JS reveals an .m3u8 URL
+    # (not a <video>/<source> tag, so it is only found by _extract_js_media_urls)
+    pages = {
+        "https://example.com/watch": (
+            '<iframe src="https://player.example.com/embed/1"></iframe>'
+        ),
+        "https://player.example.com/embed/1": (
+            '<script>var src = "https://cdn.example.com/stream/master.m3u8";</script>'
+        ),
+    }
+    detector = VideoDetector()
+    monkeypatch.setattr(detector_module, "yt_dlp", None)
+    monkeypatch.setattr(
+        detector,
+        "fetch_html_curl",
+        lambda url, referer="": pages.get(url, ""),
+    )
+
+    # When
+    candidates = detector.detect("https://example.com/watch", max_pages=1)
+
+    # Then: the candidate must be typed as 'm3u8' (not the page URL) so the
+    # downloader routes it to the HLS handler, and referer must be the
+    # original page URL so Cloudflare-protected requests aren't rejected.
+    assert len(candidates) == 1
+    assert candidates[0].video_type == "m3u8"
+    assert candidates[0].referer == "https://example.com/watch"
+
+
 def test_detect_respects_finite_page_limit(monkeypatch):
     # Given
     pages = {

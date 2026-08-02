@@ -27,12 +27,22 @@ Web Video Extractor는 임의의 웹페이지 URL(예: `https://mingky05.live/mo
 
 ## 🚀 설치 및 실행 방법
 
+### 0. OS별 사전 요구사항
+
+이 프로그램은 Python 패키지 외에 시스템에 설치된 `curl`과 `ffmpeg` 실행 파일에 의존합니다. `curl`은 일반 웹페이지 스크레이핑·HLS·직접 MP4 다운로드에 필수이며(YouTube 등 yt-dlp 지원 사이트는 예외), `ffmpeg`는 없어도 동작하지만 있어야 무손실 세그먼트 병합이 가능합니다. 둘 다 없으면 실행 시 경고 메시지로 안내합니다.
+
+| OS | curl | ffmpeg |
+|---|---|---|
+| Windows 10(1803+)/11 | 기본 내장 | `winget install ffmpeg` 또는 [공식 빌드](https://ffmpeg.org/download.html) 설치 후 PATH 등록 |
+| macOS | 기본 내장 | `brew install ffmpeg` |
+| Ubuntu 26.04 등 Linux | 최소 설치 이미지엔 없을 수 있음 → `sudo apt install curl` | `sudo apt install ffmpeg` |
+
 ### 1. 가상환경 생성 및 의존성 설치
 
 ```bash
 cd /Users/yhm/Documents/YuHyungmin1226/web_video_extractor
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows(PowerShell/cmd)는: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 

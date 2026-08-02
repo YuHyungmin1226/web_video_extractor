@@ -137,7 +137,7 @@ class VideoDetector:
                 for src in self._extract_js_media_urls(iframe_html, iframe_url):
                     if not any(c.url == src for c in candidates):
                         vtype = 'm3u8' if '.m3u8' in src.lower() else 'direct'
-                        candidates.append(VideoCandidate(url=src, title=iframe_title, video_type=page_url))
+                        candidates.append(VideoCandidate(url=src, title=iframe_title, video_type=vtype, referer=page_url))
 
         # D. Category / List Page Check: Multi-page pagination traversal
         movie_links = self._extract_movie_page_links(html, page_url)

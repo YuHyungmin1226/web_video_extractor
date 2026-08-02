@@ -83,15 +83,45 @@ def _test_ffmpeg(ffmpeg_path: str) -> bool:
     except Exception:
         return False
 
+def check_curl_installed() -> bool:
+    """Check curl is on PATH. curl ships by default on Windows 10 1803+ and
+    macOS, but minimal Linux installs (e.g. server/container base images)
+    often omit it, so this is worth surfacing explicitly rather than letting
+    every curl-based request fail silently later."""
+    curl_bin = shutil.which("curl.exe") if platform.system() == "Windows" else shutil.which("curl")
+    if not curl_bin:
+        return False
+    try:
+        res = subprocess.run([curl_bin, "--version"], capture_output=True, text=True, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
 def sanitize_filename(filename: str, default: str = "video") -> str:
-    """Sanitize string to be safe for filenames."""
+    """Sanitize string to be safe for filenames on Windows, macOS, and Linux."""
     if not filename:
         return default
-    # Remove invalid filename characters
+    # Remove characters invalid on Windows (harmless to strip on macOS/Linux too)
     s = re.sub(r'[\\/*?:"<>|]', '', filename).strip()
     # Replace multiple spaces/newlines
     s = re.sub(r'\s+', ' ', s)
-    return s[:150] if s else default
+    # Windows silently drops trailing dots/spaces, which would desync the
+    # returned name from the file actually created on disk.
+    s = s.rstrip('. ')
+    if not s:
+        return default
+    s = s[:150]
+    # Windows reserves these device names even with an extension appended later.
+    if s.upper() in _WINDOWS_RESERVED_NAMES:
+        s = f"_{s}"
+    return s
 
 def format_bytes(size: float) -> str:
     """Format bytes to human readable format."""

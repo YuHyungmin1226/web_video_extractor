@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from config import Config
 from detector import VideoCandidate, VideoDetector
 from downloader import VideoDownloader
-from utils import check_ffmpeg_installed, open_folder
+from utils import check_curl_installed, check_ffmpeg_installed, open_folder
 
 
 class DetectWorker(QThread):
@@ -262,6 +262,10 @@ class MainWindow(QMainWindow):
         self.log_console.setReadOnly(True)
         log_layout.addWidget(self.log_console)
         layout.addWidget(log_box, stretch=2)
+
+        # curl warning if missing (required for generic page scraping, HLS, and direct MP4 downloads)
+        if not check_curl_installed():
+            self.log("⚠️ curl not found on PATH. Generic page scraping, HLS, and direct MP4 downloads will fail (yt-dlp-supported sites like YouTube are unaffected).")
 
         # FFmpeg warning if missing
         ff = check_ffmpeg_installed()

@@ -3,24 +3,28 @@ Web Video Extractor & Downloader Main Entry Point
 Supports both CLI mode and GUI mode.
 """
 import argparse
-import os
+import subprocess
 from pathlib import Path
 import sys
 
-# Auto-re-exec using local .venv if available and dependencies are missing in global python
-venv_py = Path(__file__).parent / ".venv" / "bin" / "python"
+# Auto-re-exec using local .venv if available and dependencies are missing in global python.
+# venv layout differs by OS: Windows uses "Scripts\\python.exe", macOS/Linux use "bin/python".
+_venv_dir = Path(__file__).parent / ".venv"
+venv_py = _venv_dir / "Scripts" / "python.exe" if sys.platform == "win32" else _venv_dir / "bin" / "python"
 if venv_py.exists():
     try:
         import PySide6
         import yt_dlp
     except ImportError:
-        if sys.executable != str(venv_py.resolve()):
-            os.execv(str(venv_py), [str(venv_py)] + sys.argv)
+        if Path(sys.executable).resolve() != venv_py.resolve():
+            # subprocess+exit (rather than os.execv) behaves identically across
+            # Windows/macOS/Linux and avoids platform-specific process-replacement quirks.
+            sys.exit(subprocess.run([str(venv_py)] + sys.argv).returncode)
 
 from detector import VideoDetector
 from downloader import VideoDownloader
 from gui import main_gui
-from utils import check_ffmpeg_installed
+from utils import check_curl_installed, check_ffmpeg_installed
 
 
 
@@ -28,6 +32,9 @@ def run_cli(url: str, output: str = "", download_all: bool = False, max_pages: i
     print(f"=== Web Video Extractor CLI ===")
     print(f"Target URL: {url}")
     print(f"Max pages to crawl: {max_pages if max_pages > 0 else 'All'}")
+
+    if not check_curl_installed():
+        print("⚠️ Warning: curl not found on PATH. Generic page scraping, HLS, and direct MP4 downloads will fail (yt-dlp-supported sites like YouTube are unaffected).")
 
     ff = check_ffmpeg_installed()
     if ff:

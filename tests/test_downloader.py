@@ -2,7 +2,7 @@
 Unit tests for VideoDownloader & Utils
 """
 import pytest
-from utils import sanitize_filename, format_bytes, check_ffmpeg_installed, normalize_url
+from utils import sanitize_filename, format_bytes, check_ffmpeg_installed, check_curl_installed, normalize_url
 from config import Config
 
 def test_normalize_url_encodes_korean_path_and_query():
@@ -34,10 +34,25 @@ def test_sanitize_filename():
     assert "*" not in clean
     assert "<" not in clean
 
+def test_sanitize_filename_strips_trailing_dots_and_spaces():
+    # Windows silently drops trailing dots/spaces when creating the file, so
+    # the sanitized name returned here must already match what lands on disk.
+    assert sanitize_filename("My Video...  ") == "My Video"
+
+def test_sanitize_filename_escapes_windows_reserved_device_names():
+    # "CON", "PRN", "COM1", etc. are reserved on Windows even with an
+    # extension appended later (e.g. "CON.mp4" fails to create).
+    assert sanitize_filename("CON") == "_CON"
+    assert sanitize_filename("com3") == "_com3"
+    assert sanitize_filename("Console") == "Console"
+
 def test_format_bytes():
     assert format_bytes(1024) == "1.0 KB"
     assert format_bytes(1048576) == "1.0 MB"
     assert format_bytes(1073741824) == "1.0 GB"
+
+def test_check_curl_installed():
+    assert isinstance(check_curl_installed(), bool)
 
 def test_check_ffmpeg_installed():
     ff = check_ffmpeg_installed()

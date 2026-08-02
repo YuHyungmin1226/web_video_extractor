@@ -8,19 +8,6 @@ import subprocess
 from pathlib import Path
 import sys
 
-# Windows consoles default to the system locale codepage (e.g. cp949 on
-# Korean Windows), which can't encode the emoji used in CLI status output
-# below and raises UnicodeEncodeError. Force UTF-8 on stdout/stderr so
-# --cli works regardless of the console's codepage. reconfigure() is only
-# on real TextIOWrapper streams (absent when stdout is replaced, e.g. under
-# some test runners), hence the guard.
-for _stream in (sys.stdout, sys.stderr):
-    if hasattr(_stream, "reconfigure"):
-        try:
-            _stream.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
-
 # Auto-re-exec using local .venv if available and dependencies are missing in global python.
 # venv layout differs by OS: Windows uses "Scripts\\python.exe", macOS/Linux use "bin/python".
 # Skipped entirely in a PyInstaller build (sys.frozen): a frozen build carries its

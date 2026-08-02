@@ -143,59 +143,6 @@ class VideoDownloader:
             log(f"yt-dlp download failed: {e}")
             return None
 
-    def _parse_hls_segments(self, content: str):
-        """Parse an HLS media playlist into (init_segment, segments).
-
-        Each is {'uri': str, 'range': (offset, length) | None}. Handles
-        #EXT-X-MAP (fMP4 init segment, RFC 8216 4.3.2.4) and
-        #EXT-X-BYTERANGE (segments sharing one physical file via byte
-        offsets, RFC 8216 4.3.2.2) in addition to plain per-segment URIs.
-        """
-        init_segment = None
-        segments = []
-        pending_range = None
-        last_range_end = {}
-
-        for raw_line in content.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.startswith('#EXT-X-MAP'):
-                m = re.search(r'URI="([^"]+)"', line)
-                if m:
-                    uri = m.group(1)
-                    rng = None
-                    rm = re.search(r'BYTERANGE="(\d+)@(\d+)"', line)
-                    if rm:
-                        rng = (int(rm.group(2)), int(rm.group(1)))
-                    init_segment = {'uri': uri, 'range': rng}
-                continue
-            if line.startswith('#EXT-X-BYTERANGE'):
-                value = line.split(':', 1)[1] if ':' in line else ''
-                if '@' in value:
-                    length_s, offset_s = value.split('@', 1)
-                    pending_range = (int(offset_s), int(length_s))
-                elif value.strip():
-                    # Offset omitted: per spec, defaults to the byte
-                    # immediately following the previous range on this URI.
-                    pending_range = (None, int(value))
-                continue
-            if line.startswith('#'):
-                continue
-
-            uri = line
-            if pending_range is not None:
-                offset, length = pending_range
-                if offset is None:
-                    offset = last_range_end.get(uri, 0)
-                last_range_end[uri] = offset + length
-                segments.append({'uri': uri, 'range': (offset, length)})
-                pending_range = None
-            else:
-                segments.append({'uri': uri, 'range': None})
-
-        return init_segment, segments
-
     def _download_hls_m3u8(self, candidate: VideoCandidate, final_path: str, log, progress) -> Optional[str]:
         referer = normalize_url(candidate.referer or candidate.url)
         candidate_url = normalize_url(candidate.url)
@@ -205,7 +152,7 @@ class VideoDownloader:
         log("Fetching HLS playlist...")
         # 1. Fetch main m3u8 using curl
         curl_cmd = [
-            "curl", "-f", "-s", "-L",
+            "curl", "-s", "-L",
             "-A", user_agent,
             "-H", f"Referer: {referer}",
             candidate_url
@@ -230,65 +177,42 @@ class VideoDownloader:
             target_sub = normalize_url(urllib.parse.urljoin(base_url, sub_playlists[-1])) # take highest resolution variant
             log(f"Resolved variant sub-playlist: {target_sub}")
             res2 = run_hidden([
-                "curl", "-f", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", target_sub
+                "curl", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", target_sub
             ], capture_output=True, text=True, timeout=15)
             if res2.returncode == 0 and res2.stdout.strip():
                 m3u8_content = res2.stdout
                 base_url = target_sub.rsplit('/', 1)[0] + '/'
 
-        # 3. Extract segment URLs. fMP4/CMAF playlists often multiplex all
-        # segments into one physical file addressed by #EXT-X-BYTERANGE, and
-        # reference a shared init segment (moov/ftyp) via #EXT-X-MAP instead
-        # of an inline URL, so both need explicit parsing rather than just
-        # collecting non-'#' lines.
-        init_segment, segments = self._parse_hls_segments(m3u8_content)
+        # 3. Extract segment URLs (.ts, .m4s, etc.)
+        segments = [line for line in m3u8_content.splitlines() if line.strip() and not line.startswith('#')]
         if not segments:
             log("No valid media segments found in playlist.")
             return None
 
         total_segments = len(segments)
-        is_byte_range_stream = init_segment is not None or any(s['range'] for s in segments)
         log(f"Total media segments to download: {total_segments}")
 
         # 4. Multi-threaded segment downloader into temp directory
         temp_dir = tempfile.mkdtemp(prefix="web_video_hls_")
-
-        init_path = None
-        if init_segment:
-            init_url = normalize_url(urllib.parse.urljoin(base_url, init_segment['uri']))
-            init_path = os.path.join(temp_dir, "init_seg")
-            init_cmd = ["curl", "-f", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}"]
-            if init_segment['range']:
-                offset, length = init_segment['range']
-                init_cmd += ["--range", f"{offset}-{offset + length - 1}"]
-            init_cmd += ["-o", init_path, init_url]
-            run_hidden(init_cmd, check=False)
-            if not (os.path.exists(init_path) and os.path.getsize(init_path) > 0):
-                log("Failed to fetch fMP4 init segment.")
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                return None
-
         ts_files = [None] * total_segments
         completed_count = 0
         import threading
         progress_lock = threading.Lock()
 
-        def download_segment(idx: int, seg: dict):
+        def download_segment(idx: int, seg_path: str):
             nonlocal completed_count
-            seg_url = normalize_url(urllib.parse.urljoin(base_url, seg['uri']))
+            seg_url = normalize_url(urllib.parse.urljoin(base_url, seg_path))
             out_ts = os.path.join(temp_dir, f"seg_{idx:05d}.ts")
 
             cmd = [
-                "curl", "-f", "-s", "-L",
+                "curl", "-s", "-L",
                 "-A", user_agent,
                 "-H", f"Referer: {referer}",
+                "-o", out_ts,
                 "--retry", "3",
                 "--max-time", "30",
+                seg_url
             ]
-            if seg['range']:
-                offset, length = seg['range']
-                cmd += ["--range", f"{offset}-{offset + length - 1}"]
-            cmd += ["-o", out_ts, seg_url]
             run_hidden(cmd, check=False)
             if os.path.exists(out_ts) and os.path.getsize(out_ts) > 0:
                 ts_files[idx] = out_ts
@@ -309,35 +233,8 @@ class VideoDownloader:
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
 
-        log("Stitching video segments...")
-
-        if is_byte_range_stream:
-            # CMAF fragments pulled out by byte range are raw moof+mdat
-            # boxes, not independently decodable files, so ffmpeg's -f
-            # concat demuxer (which expects each listed input to already be
-            # a valid container) can't join them — it silently produced a
-            # corrupt/wildly-wrong-duration output when tried. Appending
-            # their bytes directly after the shared init segment (ftyp+moov)
-            # is how CMAF fragments are designed to be joined in the first
-            # place, and reconstructs a single valid fragmented MP4.
-            try:
-                with open(final_path, "wb") as outfile:
-                    if init_path and os.path.exists(init_path):
-                        with open(init_path, "rb") as f:
-                            outfile.write(f.read())
-                    for ts in valid_ts:
-                        with open(ts, "rb") as infile:
-                            outfile.write(infile.read())
-                progress(100.0)
-                log("fMP4 segment concatenation complete!")
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                return final_path
-            except Exception as e:
-                log(f"Concat failed: {e}")
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                return None
-
         # 5. Concatenate segments using FFmpeg or raw file join
+        log("Stitching video segments...")
         if not self.ffmpeg_path:
             self.ffmpeg_path = check_ffmpeg_installed()
 
@@ -388,7 +285,7 @@ class VideoDownloader:
         user_agent = self.config.get("user_agent")
 
         cmd = [
-            "curl", "-f", "-L",
+            "curl", "-L",
             "-A", user_agent,
             "-H", f"Referer: {referer}",
             "-o", final_path,

@@ -40,7 +40,7 @@ class VideoDetector:
         """Fetch page HTML using curl (supports HTTP/2 and modern TLS signatures)."""
         url = normalize_url(url)
         cmd = [
-            "curl", "-f", "-s", "-L",
+            "curl", "-s", "-L",
             "-A", self.user_agent,
             "--max-time", "15"
         ]

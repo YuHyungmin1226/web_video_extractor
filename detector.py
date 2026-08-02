@@ -37,18 +37,10 @@ class VideoDetector:
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
 
     def fetch_html_curl(self, url: str, referer: str = "") -> str:
-        """Fetch page HTML using curl (supports HTTP/2 and modern TLS signatures).
-
-        Deliberately no -f/--fail here (unlike the download paths in
-        downloader.py): a page fetch is used for best-effort regex parsing,
-        not saved as a deliverable, so a 403/404 body is still worth
-        examining (many sites serve real markup alongside a non-2xx status,
-        e.g. soft-block or geofencing pages that still leak an embed URL).
-        -f would discard that body outright based on status code alone.
-        """
+        """Fetch page HTML using curl (supports HTTP/2 and modern TLS signatures)."""
         url = normalize_url(url)
         cmd = [
-            "curl", "-s", "-L",
+            "curl", "-f", "-s", "-L",
             "-A", self.user_agent,
             "--max-time", "15"
         ]
@@ -243,10 +235,7 @@ class VideoDetector:
             r'<(?:video|source)[^>]+(?:data-source|src)=["\']([^"\']+)["\']',
             r'data-source=["\']([^"\']+)["\']',
             r'data-url=["\']([^"\']+)["\']',
-            r'meta\s+property=["\']og:video(?::url)?["\']\s+content=["\']([^"\']+)["\']',
-            # Same og:video tag, attribute order swapped (content before
-            # property) — mirrors the og:title fallback in _extract_title.
-            r'meta\s+content=["\']([^"\']+)["\']\s+property=["\']og:video(?::url)?["\']'
+            r'meta\s+property=["\']og:video(?::url)?["\']\s+content=["\']([^"\']+)["\']'
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, raw_html, re.IGNORECASE):
@@ -260,43 +249,18 @@ class VideoDetector:
 
     def _extract_js_media_urls(self, html: str, base_url: str) -> List[str]:
         results = []
-        # Inline player configs are frequently emitted as JSON, which
-        # escapes forward slashes (e.g. "https:\/\/cdn.example.com\/x.m3u8")
-        # — de-escape a working copy so the patterns below can match. The
-        # `html` argument itself is left untouched for the other extractors.
-        unescaped = html.replace('\\/', '/')
-        patterns = [
-            r'https?://[^\s\'\"\<\>]+?\.(?:m3u8|mp4)[^\s\'\"\<\>]*',
-            # Protocol-relative URLs (e.g. "//cdn.example.com/x.m3u8"),
-            # common when a site's own asset URLs are scheme-relative.
-            # Negative lookbehind on ':' keeps this from re-matching the
-            # "//" that already follows "https:" in the pattern above.
-            r'(?<!:)//[^\s\'\"\<\>]+?\.(?:m3u8|mp4)[^\s\'\"\<\>]*',
-        ]
-        for pattern in patterns:
-            for url in re.findall(pattern, unescaped, re.IGNORECASE):
-                full_url = urllib.parse.urljoin(base_url, url)
-                if full_url not in results:
-                    results.append(full_url)
+        matches = re.findall(r'https?://[^\s\'\"\<\>]+?\.(?:m3u8|mp4)[^\s\'\"\<\>]*', html, re.IGNORECASE)
+        for url in matches:
+            full_url = urllib.parse.urljoin(base_url, url)
+            if full_url not in results:
+                results.append(full_url)
         return results
 
     def _extract_iframe_urls(self, html: str, base_url: str) -> List[str]:
         results = []
-        # data-src first: lazy-loaded iframes commonly ship a placeholder
-        # src="about:blank" (or omit src entirely) and hold the real player
-        # URL in data-src until a lazyload script swaps it in on scroll —
-        # something that never happens here since we only fetch static
-        # HTML. Trying data-src before src means we prefer the real target
-        # when both are present on the same tag.
-        for m in re.finditer(r'<iframe\b[^>]*\bdata-src=["\']([^"\']+)["\']', html, re.IGNORECASE):
-            src = m.group(1).strip()
-            if src and not src.startswith('javascript:') and 'googletagmanager' not in src:
-                full_url = urllib.parse.urljoin(base_url, src)
-                if full_url not in results:
-                    results.append(full_url)
         for m in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
             src = m.group(1).strip()
-            if src and not src.startswith('javascript:') and 'googletagmanager' not in src and src != 'about:blank':
+            if src and not src.startswith('javascript:') and 'googletagmanager' not in src:
                 full_url = urllib.parse.urljoin(base_url, src)
                 if full_url not in results:
                     results.append(full_url)

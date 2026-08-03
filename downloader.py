@@ -135,13 +135,123 @@ class VideoDownloader:
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+                # extract_info(download=True) (rather than ydl.download())
+                # returns the info dict, which is the only reliable way to
+                # learn the actual output path: when merging doesn't happen
+                # (no ffmpeg, or the selected format is already muxed), the
+                # real file's extension can differ from final_path's ".mp4".
+                info = ydl.extract_info(url, download=True)
+
+            actual_path = final_path
+            if info:
+                requested = info.get('requested_downloads') or []
+                if requested and requested[0].get('filepath'):
+                    actual_path = requested[0]['filepath']
+
+            if not (os.path.exists(actual_path) and os.path.getsize(actual_path) > 0):
+                log("yt-dlp reported success but no output file was found on disk.")
+                return None
+
             progress(100.0)
             log("Download completed successfully!")
-            return final_path
+            return actual_path
         except Exception as e:
             log(f"yt-dlp download failed: {e}")
             return None
+
+    def _parse_hls_segments(self, content: str):
+        """Parse an HLS media playlist into (init_segment, segments).
+
+        Each is {'uri': str, 'range': (offset, length) | None}. Handles
+        #EXT-X-MAP (fMP4 init segment, RFC 8216 4.3.2.4) and
+        #EXT-X-BYTERANGE (segments sharing one physical file via byte
+        offsets, RFC 8216 4.3.2.2) in addition to plain per-segment URIs.
+
+        If a playlist has multiple #EXT-X-MAP tags (live streams can emit a
+        new one per discontinuity), only the last one is kept — fine for
+        this app's VOD-focused use, wrong for a live playlist that actually
+        changes init segments mid-stream.
+        """
+        init_segment = None
+        segments = []
+        pending_range = None
+        last_range_end = {}
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith('#EXT-X-MAP'):
+                m = re.search(r'URI="([^"]+)"', line)
+                if m:
+                    uri = m.group(1)
+                    rng = None
+                    rm = re.search(r'BYTERANGE="(\d+)@(\d+)"', line)
+                    if rm:
+                        rng = (int(rm.group(2)), int(rm.group(1)))
+                    init_segment = {'uri': uri, 'range': rng}
+                continue
+            if line.startswith('#EXT-X-BYTERANGE'):
+                value = line.split(':', 1)[1] if ':' in line else ''
+                if '@' in value:
+                    length_s, offset_s = value.split('@', 1)
+                    pending_range = (int(offset_s), int(length_s))
+                elif value.strip():
+                    # Offset omitted: per spec, defaults to the byte
+                    # immediately following the previous range on this URI.
+                    pending_range = (None, int(value))
+                continue
+            if line.startswith('#'):
+                continue
+
+            uri = line
+            if pending_range is not None:
+                offset, length = pending_range
+                if offset is None:
+                    offset = last_range_end.get(uri, 0)
+                last_range_end[uri] = offset + length
+                segments.append({'uri': uri, 'range': (offset, length)})
+                pending_range = None
+            else:
+                segments.append({'uri': uri, 'range': None})
+
+        return init_segment, segments
+
+    def _select_master_variant(self, content: str) -> Optional[str]:
+        """Pick the best variant URI from an HLS master playlist.
+
+        Prefers the highest-BANDWIDTH variant that declares a RESOLUTION
+        attribute on its #EXT-X-STREAM-INF line. Per RFC 8216 4.3.4.2,
+        RESOLUTION is only present when the variant includes a video
+        rendition — audio-only renditions (commonly listed for
+        accessibility/legacy fallback, not necessarily first or last) never
+        set it. Picking "just the last listed variant" as "highest quality"
+        (the previous heuristic) can and does land on an audio-only
+        rendition depending on playlist ordering, producing a "video"
+        download with no picture. Falls back to highest-BANDWIDTH overall
+        if no variant declares RESOLUTION at all.
+        """
+        variants = []  # (bandwidth, has_resolution, uri)
+        pending = None
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith('#EXT-X-STREAM-INF'):
+                attrs = line.split(':', 1)[1] if ':' in line else ''
+                bw_m = re.search(r'BANDWIDTH=(\d+)', attrs)
+                pending = (int(bw_m.group(1)) if bw_m else 0, 'RESOLUTION=' in attrs)
+                continue
+            if line.startswith('#'):
+                continue
+            if pending is not None:
+                variants.append((pending[0], pending[1], line))
+                pending = None
+
+        if not variants:
+            return None
+        pool = [v for v in variants if v[1]] or variants
+        return max(pool, key=lambda v: v[0])[2]
 
     def _download_hls_m3u8(self, candidate: VideoCandidate, final_path: str, log, progress) -> Optional[str]:
         referer = normalize_url(candidate.referer or candidate.url)
@@ -152,7 +262,7 @@ class VideoDownloader:
         log("Fetching HLS playlist...")
         # 1. Fetch main m3u8 using curl
         curl_cmd = [
-            "curl", "-s", "-L",
+            "curl", "-f", "-s", "-L",
             "-A", user_agent,
             "-H", f"Referer: {referer}",
             candidate_url
@@ -174,47 +284,99 @@ class VideoDownloader:
         # Check for sub-playlists (.m3u8)
         sub_playlists = [line for line in lines if not line.startswith('#') and '.m3u8' in line.lower()]
         if sub_playlists:
-            target_sub = normalize_url(urllib.parse.urljoin(base_url, sub_playlists[-1])) # take highest resolution variant
+            best_variant = self._select_master_variant(m3u8_content) or sub_playlists[-1]
+            target_sub = normalize_url(urllib.parse.urljoin(base_url, best_variant))
             log(f"Resolved variant sub-playlist: {target_sub}")
             res2 = run_hidden([
-                "curl", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", target_sub
+                "curl", "-f", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", target_sub
             ], capture_output=True, text=True, timeout=15)
-            if res2.returncode == 0 and res2.stdout.strip():
-                m3u8_content = res2.stdout
-                base_url = target_sub.rsplit('/', 1)[0] + '/'
+            if res2.returncode != 0 or not res2.stdout.strip():
+                # Falling through here would leave m3u8_content as the master
+                # playlist, whose non-'#' lines are *.m3u8 variant URLs, not
+                # media segments — _parse_hls_segments would then try to
+                # download those .m3u8 text files as if they were video.
+                log("Failed to fetch variant sub-playlist.")
+                return None
+            m3u8_content = res2.stdout
+            base_url = target_sub.rsplit('/', 1)[0] + '/'
 
-        # 3. Extract segment URLs (.ts, .m4s, etc.)
-        segments = [line for line in m3u8_content.splitlines() if line.strip() and not line.startswith('#')]
+        # 3. Extract segment URLs. fMP4/CMAF playlists often multiplex all
+        # segments into one physical file addressed by #EXT-X-BYTERANGE, and
+        # reference a shared init segment (moov/ftyp) via #EXT-X-MAP instead
+        # of an inline URL, so both need explicit parsing rather than just
+        # collecting non-'#' lines.
+        init_segment, segments = self._parse_hls_segments(m3u8_content)
         if not segments:
             log("No valid media segments found in playlist.")
             return None
 
         total_segments = len(segments)
+        is_byte_range_stream = init_segment is not None or any(s['range'] for s in segments)
         log(f"Total media segments to download: {total_segments}")
 
         # 4. Multi-threaded segment downloader into temp directory
         temp_dir = tempfile.mkdtemp(prefix="web_video_hls_")
+
+        init_path = None
+        if init_segment:
+            init_url = normalize_url(urllib.parse.urljoin(base_url, init_segment['uri']))
+            init_path = os.path.join(temp_dir, "init_seg")
+            init_range = init_segment['range']
+            init_cmd = ["curl", "-f", "-s", "-L", "-A", user_agent, "-H", f"Referer: {referer}", "--max-time", "30"]
+            if init_range:
+                offset, length = init_range
+                init_cmd += ["--range", f"{offset}-{offset + length - 1}"]
+            init_cmd += ["-o", init_path, init_url]
+            run_hidden(init_cmd, check=False)
+            init_ok = os.path.exists(init_path) and os.path.getsize(init_path) > 0
+            if init_ok and init_range and os.path.getsize(init_path) != init_range[1]:
+                # A server that ignores the Range header returns the whole
+                # file with HTTP 200 instead of 206 — curl -f treats that as
+                # success since 200 isn't an error status, so a size check
+                # against the requested length is the only reliable signal.
+                # Silently accepting this reproduces the exact corruption
+                # (whole file duplicated per "segment") this fMP4 path was
+                # written to fix, just via a server that ignores Range
+                # instead of the byte-range parsing being missing.
+                log("Init segment server ignored the byte range request (got a differently-sized response).")
+                init_ok = False
+            if not init_ok:
+                log("Failed to fetch fMP4 init segment.")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
         ts_files = [None] * total_segments
         completed_count = 0
         import threading
         progress_lock = threading.Lock()
 
-        def download_segment(idx: int, seg_path: str):
+        def download_segment(idx: int, seg: dict):
             nonlocal completed_count
-            seg_url = normalize_url(urllib.parse.urljoin(base_url, seg_path))
+            seg_url = normalize_url(urllib.parse.urljoin(base_url, seg['uri']))
             out_ts = os.path.join(temp_dir, f"seg_{idx:05d}.ts")
+            seg_range = seg['range']
 
             cmd = [
-                "curl", "-s", "-L",
+                "curl", "-f", "-s", "-L",
                 "-A", user_agent,
                 "-H", f"Referer: {referer}",
-                "-o", out_ts,
                 "--retry", "3",
                 "--max-time", "30",
-                seg_url
             ]
+            if seg_range:
+                offset, length = seg_range
+                cmd += ["--range", f"{offset}-{offset + length - 1}"]
+            cmd += ["-o", out_ts, seg_url]
             run_hidden(cmd, check=False)
-            if os.path.exists(out_ts) and os.path.getsize(out_ts) > 0:
+            ok = os.path.exists(out_ts) and os.path.getsize(out_ts) > 0
+            if ok and seg_range and os.path.getsize(out_ts) != seg_range[1]:
+                # Same server-ignored-Range guard as the init segment fetch.
+                ok = False
+                try:
+                    os.remove(out_ts)
+                except OSError:
+                    pass
+            if ok:
                 ts_files[idx] = out_ts
                 with progress_lock:
                     completed_count += 1
@@ -233,8 +395,47 @@ class VideoDownloader:
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
 
-        # 5. Concatenate segments using FFmpeg or raw file join
+        if is_byte_range_stream and len(valid_ts) < total_segments:
+            # Unlike plain .ts/HLS (where most players tolerate a dropped
+            # segment as a brief glitch), CMAF fragments concatenated by raw
+            # byte-append must be complete and in order — a missing fragment
+            # shifts every subsequent moof's implicit sample offsets, which
+            # commonly makes players refuse the file outright rather than
+            # just glitch. Better to fail loudly than hand back a file that
+            # "downloaded successfully" but won't open.
+            log(f"Download failed: fMP4 stream is missing {total_segments - len(valid_ts)} segment(s); a partial byte-range file would not play correctly.")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+
         log("Stitching video segments...")
+
+        if is_byte_range_stream:
+            # CMAF fragments pulled out by byte range are raw moof+mdat
+            # boxes, not independently decodable files, so ffmpeg's -f
+            # concat demuxer (which expects each listed input to already be
+            # a valid container) can't join them — it silently produced a
+            # corrupt/wildly-wrong-duration output when tried. Appending
+            # their bytes directly after the shared init segment (ftyp+moov)
+            # is how CMAF fragments are designed to be joined in the first
+            # place, and reconstructs a single valid fragmented MP4.
+            try:
+                with open(final_path, "wb") as outfile:
+                    if init_path and os.path.exists(init_path):
+                        with open(init_path, "rb") as f:
+                            outfile.write(f.read())
+                    for ts in valid_ts:
+                        with open(ts, "rb") as infile:
+                            outfile.write(infile.read())
+                progress(100.0)
+                log("fMP4 segment concatenation complete!")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return final_path
+            except Exception as e:
+                log(f"Concat failed: {e}")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+        # 5. Concatenate segments using FFmpeg or raw file join
         if not self.ffmpeg_path:
             self.ffmpeg_path = check_ffmpeg_installed()
 
@@ -285,7 +486,7 @@ class VideoDownloader:
         user_agent = self.config.get("user_agent")
 
         cmd = [
-            "curl", "-L",
+            "curl", "-f", "-L",
             "-A", user_agent,
             "-H", f"Referer: {referer}",
             "-o", final_path,

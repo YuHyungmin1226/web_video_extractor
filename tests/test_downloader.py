@@ -1,6 +1,8 @@
 """
 Unit tests for VideoDownloader & Utils
 """
+import shutil
+
 import pytest
 from utils import sanitize_filename, format_bytes, check_ffmpeg_installed, check_curl_installed, normalize_url
 from config import Config
@@ -56,9 +58,11 @@ def test_check_curl_installed():
 
 def test_check_ffmpeg_installed():
     ff = check_ffmpeg_installed()
-    # On this machine, FFmpeg is at /Users/yhm/.local/ffmpeg/ffmpeg
     assert isinstance(ff, str)
-    assert len(ff) > 0
+    # Only assert a path was found when ffmpeg is actually on this machine's
+    # PATH — this test must not assume any particular dev machine's setup.
+    if shutil.which("ffmpeg") or shutil.which("ffmpeg.exe"):
+        assert len(ff) > 0
 
 def test_download_skip_existing(tmp_path):
     from downloader import VideoDownloader

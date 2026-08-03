@@ -261,6 +261,10 @@ class VideoDownloader:
 
         log("Fetching HLS playlist...")
         # 1. Fetch main m3u8 using curl
+        # -f (--fail): unlike fetch_html_curl (best-effort HTML scraping, where
+        # an error page may still contain a usable embed URL), a non-2xx
+        # response here has no valid playlist content, so treat it as failure
+        # instead of parsing the error body as if it were m3u8 text.
         curl_cmd = [
             "curl", "-f", "-s", "-L",
             "-A", user_agent,
@@ -349,6 +353,7 @@ class VideoDownloader:
         completed_count = 0
         import threading
         progress_lock = threading.Lock()
+        segment_retries = str(int(self.config.get("max_retries", 3)))
 
         def download_segment(idx: int, seg: dict):
             nonlocal completed_count
@@ -356,11 +361,15 @@ class VideoDownloader:
             out_ts = os.path.join(temp_dir, f"seg_{idx:05d}.ts")
             seg_range = seg['range']
 
+            # -f (--fail): without it, a 403/404 response body (e.g. an HTML
+            # error page) is written to out_ts and later passed the
+            # size>0 check below, silently corrupting the final video with
+            # non-media bytes stitched between real segments.
             cmd = [
                 "curl", "-f", "-s", "-L",
                 "-A", user_agent,
                 "-H", f"Referer: {referer}",
-                "--retry", "3",
+                "--retry", segment_retries,
                 "--max-time", "30",
             ]
             if seg_range:
@@ -485,6 +494,9 @@ class VideoDownloader:
         url = normalize_url(candidate.url)
         user_agent = self.config.get("user_agent")
 
+        # -f (--fail): without it, curl exits 0 on a 403/404 and writes the
+        # error response body to final_path, which then passes the size>0
+        # check below and gets reported as a successful download.
         cmd = [
             "curl", "-f", "-L",
             "-A", user_agent,
@@ -500,6 +512,7 @@ class VideoDownloader:
                 progress(100.0)
                 log("Direct download completed!")
                 return final_path
+            log(f"Direct download failed (curl exit {res.returncode}): {res.stderr.strip()[:200]}")
         except Exception as e:
             log(f"Direct download error: {e}")
         return None

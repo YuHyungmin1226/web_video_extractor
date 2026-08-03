@@ -519,7 +519,32 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Batch Warning", "No videos were successfully downloaded.")
 
 
+    def _running_workers(self):
+        return [w for w in (self.detect_worker, self.download_worker) if w is not None and w.isRunning()]
+
     def closeEvent(self, event):
+        running = self._running_workers()
+        if running:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Exit",
+                "A detection or download is still in progress. Closing now will "
+                "abort it and may leave partial files behind. Close anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            # QThread wraps a blocking curl/ffmpeg subprocess call with no
+            # cooperative cancellation hook, so there is no graceful stop
+            # available here. terminate()+wait() before the window (and thus
+            # the QThread objects) is torn down avoids Qt's "QThread:
+            # Destroyed while thread is still running" crash on exit.
+            for worker in running:
+                worker.terminate()
+                worker.wait(2000)
+
         if not self.isMaximized():
             ws = [self.width(), self.height()]
             self.config.set("window_size", ws)
@@ -528,6 +553,16 @@ class MainWindow(QMainWindow):
 
 def main_gui():
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationDisplayName(APP_DISPLAY_NAME)
+    # Must match the installed .desktop file's basename (without ".desktop")
+    # so Linux desktop environments (GNOME/KDE, X11 and Wayland) resolve the
+    # running window back to that entry's Name/Icon for the taskbar and dock
+    # instead of falling back to the generic "python3" launcher.
+    app.setDesktopFileName("webvideoextractor")
+    icon_path = _resolve_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
